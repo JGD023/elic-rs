@@ -1,0 +1,6 @@
+compressai
+torch
+torchvision
+numpy
+# fMoW-S2 通常是 GeoTIFF 格式，需要 rasterio 来读取
+rasterio
