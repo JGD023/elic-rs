@@ -1,8 +1,8 @@
 # evaluate.py
-# 最终修复版 V3:
+# 最终修复版 V4:
 # 1. (策略改变) 使用中心裁剪 (Center Crop)。
-# 2. (本次修复) 调用 model(x) 而不是 model.compress() 来获取 likelihoods 和 x_hat。
-# 3. (保留) 改进了错误打印和 likelihoods 键检查。
+# 2. (修复) 调用 model(x) 来获取 likelihoods 和 x_hat。
+# 3. (新功能) 添加 pytorch_msssim 库来计算 MS-SSIM (dB)。
 
 import argparse
 import math
@@ -17,6 +17,15 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from collections import OrderedDict 
 import traceback 
+
+# --- (新功能) 导入 MS-SSIM 库 ---
+try:
+    from pytorch_msssim import ms_ssim
+except ImportError:
+    print("错误：未找到 'pytorch-msssim' 库。")
+    print("请先运行: pip install pytorch-msssim")
+    sys.exit(1)
+# --- (添加结束) ---
 
 # --- 自定义模块导入 ---
 try:
@@ -39,6 +48,32 @@ def compute_bpp(out_net, num_pixels):
     likelihoods = out_net['likelihoods']
     bpp = sum( (torch.log(likelihoods[k]).sum() / (-math.log(2) * num_pixels)) for k in likelihoods )
     return bpp.item()
+
+# --- (新功能) MS-SSIM 计算辅助函数 ---
+def compute_msssim(a, b, data_range=1.0):
+    """计算 a 和 b 之间的 MS-SSIM 值 (0-1)"""
+    # ms_ssim 函数期望输入 (B, C, H, W)，且 C 必须是 1, 3, 或 4
+    # 我们的 C=13，所以我们需要逐通道计算 MS-SSIM 并取平均值
+    
+    total_msssim = 0.0
+    num_channels = a.size(1) # 获取通道数 (C=13)
+    
+    for c in range(num_channels):
+        channel_a = a[:, c:c+1, :, :] # 保持 (B, 1, H, W) 维度
+        channel_b = b[:, c:c+1, :, :]
+        
+        # size_average=False, non-negative SSIM
+        total_msssim += ms_ssim(channel_a, channel_b, data_range=data_range, size_average=False).item()
+        
+    return total_msssim / num_channels # 返回所有通道的平均 MS-SSIM
+
+def compute_msssim_db(msssim_val):
+    """将 MS-SSIM 值 (0-1) 转换为 dB"""
+    if msssim_val >= 1.0: # 避免 log(0)
+        return float('inf')
+    return -10 * math.log10(1 - msssim_val)
+# --- (添加结束) ---
+
 
 # --- 评估数据集 (EvalDatasetCenterCrop 无需修改) ---
 class EvalDatasetCenterCrop(Dataset):
@@ -85,7 +120,6 @@ def main(argv):
     parser.add_argument("--cuda", action="store_true", help="Use cuda")
     parser.add_argument("-w", "--workers", type=int, default=4, help="Dataloader workers")
     parser.add_argument("--crop-size", type=int, default=256, help="Center crop size (default: 256)")
-    # (不再需要 --pad-factor)
     args = parser.parse_args(argv)
 
     if not os.path.exists(args.checkpoint): sys.exit(f"错误：检查点不存在: {args.checkpoint}")
@@ -121,6 +155,7 @@ def main(argv):
     # 3. 运行评估
     total_psnr = 0.0
     total_bpp = 0.0
+    total_msssim_db = 0.0 # <-- (新功能) 添加 MS-SSIM (dB) 累加器
     num_images = 0
     skipped_count = 0 
     print("\n开始评估 (使用中心裁剪)...")
@@ -133,31 +168,38 @@ def main(argv):
             num_pixels = x.size(0) * x.size(2) * x.size(3) # B*H*W
             
             try:
-                # --- (关键修复) 调用模型前向传播 ---
-                # 它会返回包含 'x_hat' 和 'likelihoods' 的字典
                 out_net = net(x) 
-                # --- (修复结束) ---
-                
-                # --- (关键修复) 从 out_net 获取 x_hat ---
                 x_hat = out_net['x_hat']
-                # --- (修复结束) ---
                 
-                # 计算指标 (使用 out_net 获取 likelihoods)
+                # 计算指标
                 current_bpp = compute_bpp(out_net, num_pixels)
                 current_psnr = compute_psnr(x, x_hat.clamp(0, 1), data_range=1.0) 
+                
+                # --- (新功能) 计算 MS-SSIM (dB) ---
+                current_msssim_val = compute_msssim(x, x_hat.clamp(0, 1), data_range=1.0)
+                current_msssim_db = compute_msssim_db(current_msssim_val)
+                # --- (添加结束) ---
 
-                if math.isnan(current_bpp) or math.isinf(current_psnr):
+                if math.isnan(current_bpp) or math.isinf(current_psnr) or math.isinf(current_msssim_db):
                     if math.isnan(current_bpp): reason = "BPP NaN"
-                    else: reason = "PSNR Inf"
+                    elif math.isinf(current_psnr): reason = "PSNR Inf"
+                    else: reason = "MS-SSIM Inf"
                     print(f"\n警告：图像 {filepaths[0]} 结果无效 ({reason})，跳过统计。")
                     skipped_count += 1
                     continue 
 
                 total_bpp += current_bpp
                 total_psnr += current_psnr
+                total_msssim_db += current_msssim_db # <-- (新功能) 累加
                 num_images += 1
                 
-                pbar.set_postfix(avg_bpp=f'{total_bpp / num_images:.4f}', avg_psnr=f'{total_psnr / num_images:.2f} dB')
+                # --- (新功能) 更新进度条 ---
+                pbar.set_postfix(
+                    avg_bpp=f'{total_bpp / num_images:.4f}',
+                    avg_psnr=f'{total_psnr / num_images:.2f} dB',
+                    avg_msssim=f'{total_msssim_db / num_images:.3f} dB' # <-- 添加到进度条
+                )
+                # --- (添加结束) ---
 
             except Exception as e:
                 print(f"\n处理文件 {filepaths[0]} 时发生错误: ")
@@ -167,13 +209,15 @@ def main(argv):
                 print("跳过此文件。")
                 skipped_count += 1
 
-    # 4. 打印结果 (无需修改)
+    # 4. 打印结果
     print("\n" + "=" * 30)
     print("--- 评估完成 (中心裁剪) ---")
     if num_images == 0: print("错误：未能成功处理任何图像。")
     else:
         avg_bpp = total_bpp / num_images
         avg_psnr = total_psnr / num_images
+        avg_msssim_db = total_msssim_db / num_images # <-- (新功能) 计算平均值
+        
         print(f"在 {num_images} 张图像上评估完成。")
         if skipped_count > 0:
              print(f"  (另有 {skipped_count} 张图像因错误或尺寸过小而被跳过)")
@@ -183,6 +227,7 @@ def main(argv):
         print("-" * 30)
         print(f"平均 BPP : {avg_bpp:.6f} bpp")
         print(f"平均 PSNR: {avg_psnr:.4f} dB")
+        print(f"平均 MS-SSIM (dB): {avg_msssim_db:.5f} dB") # <-- (新功能) 打印结果
     print("=" * 30)
 
 if __name__ == "__main__":

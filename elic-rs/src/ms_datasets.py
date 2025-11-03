@@ -1,4 +1,5 @@
 # src/ms_datasets.py
+# (V6 修复版)
 
 import os
 import glob
@@ -8,14 +9,16 @@ import rasterio
 import numpy as np
 from torch.utils.data import Dataset
 
+# (V6 修复)
+# 我们定义一个最小的"信号"阈值。
+# 如果一个 patch 的 (max - min) 小于这个值，我们就认为它是不稳定的。
+MIN_SIGNAL_RANGE = 1e-5 
+
 class FMoWS2Dataset(Dataset):
     """
     用于 fMoW-S2 多光谱 (13 波段) 数据的自定义 Dataset。
     
-    *** 新版本：
-    1. 支持对小于 patch_size 的图像进行 0 填充。
-    2. 在遇到通道数不匹配或读取失败时，返回 empty(0) 以便 collate_fn 过滤。
-    ***
+    (V6 修复): 检查数值稳定性 (max - min < 1e-5)
     """
     def __init__(self, root, patch_size=256, split='train'):
         self.root = root
@@ -42,23 +45,25 @@ class FMoWS2Dataset(Dataset):
                 img = src.read().astype(np.float32) 
         except Exception as e:
             print(f"警告：读取文件 {filepath} 失败: {e}")
-            # --- (关键修改 1) ---
-            # 返回空张量，让 collate_fn 过滤掉
             return torch.empty(0) 
 
-        # --- (关键修改 2) ---
+        # (V3 修复) 检查 NaN/Inf
+        if np.isnan(img).any() or np.isinf(img).any():
+            if idx < 50: 
+                print(f"警告：文件 {filepath} 包含 NaN/Inf，已跳过。")
+            return torch.empty(0)
+
+        # 检查通道数
         if img.shape[0] != 13:
-            # 打印警告，但只在训练刚开始时少量打印
-            if idx < 50: # 避免刷屏
+            if idx < 50:
                  print(f"警告：文件 {filepath} 的通道数不是 13 (而是 {img.shape[0]})，已跳过。")
-            # 返回空张量，让 collate_fn 过滤掉
             return torch.empty(0)
 
         # 归一化
         img = np.clip(img / 10000.0, 0.0, 1.0)
         img_tensor = torch.from_numpy(img)
         
-        # 填充逻辑
+        # 填充
         c, h, w = img_tensor.shape
         if h < self.patch_size or w < self.patch_size:
             pad_h = max(0, self.patch_size - h)
@@ -66,21 +71,25 @@ class FMoWS2Dataset(Dataset):
             padding = (0, pad_w, 0, pad_h) 
             img_tensor = F.pad(img_tensor, padding, mode='constant', value=0)
             
-        # 随机裁剪
+        # 裁剪
         c, h_padded, w_padded = img_tensor.shape
         top = torch.randint(0, h_padded - self.patch_size + 1, (1,)).item()
         left = torch.randint(0, w_padded - self.patch_size + 1, (1,)).item()
         
         patch = img_tensor[:, top : top + self.patch_size, left : left + self.patch_size]
         
+        # --- (!!! 最终修复 V6 !!!) ---
+        if (patch.max() - patch.min()) < MIN_SIGNAL_RANGE:
+            if idx < 50: # 避免刷屏
+                print(f"警告：文件 {filepath} 产生了数值不稳定 (范围 < {MIN_SIGNAL_RANGE}) patch，已跳过。")
+            return torch.empty(0)
+        # --- (修复结束) ---
+        
         return patch
 
-# 这个函数现在至关重要，它会过滤掉所有返回 torch.empty(0) 的坏数据
+# collate_fn (无需修改)
 def collate_fn(batch):
-    # 过滤掉那些读取失败的空张量
     batch = [b for b in batch if b.shape[0] > 0]
     if len(batch) == 0:
-        # 如果整个批次都是坏数据，返回一个空张量，训练循环会跳过它
         return torch.empty(0)
-    # 用剩余的好数据组成批次
     return torch.utils.data.dataloader.default_collate(batch)
