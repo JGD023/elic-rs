@@ -22,7 +22,7 @@ torchrun --nproc_per_node=$NUM_GPUS src/train_ms.py \
     -d "$DATA_PATH" \
     -l $LMBDA \
     -b $BATCH_SIZE \
-    -e 1000 \
+    -e 2000 \
     -lr 1e-4 \
     --patch-size 256 \
     -n $WORKERS \

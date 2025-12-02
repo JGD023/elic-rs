@@ -1,4 +1,5 @@
 #!/bin/bash
+# elic-rs/run_training.sh
 
 # --- 默认值 ---
 DEFAULT_NUM_GPUS=2
@@ -7,7 +8,7 @@ DEFAULT_PORT=29501 # 默认端口
 DEFAULT_BATCH_SIZE=16
 DEFAULT_WORKERS=16 # 每个进程的 worker 数 (2 GPU * 8 workers/GPU)
 DEFAULT_EPOCHS=1000
-DEFAULT_LR=1e-4
+DEFAULT_LR=1e-6
 DEFAULT_PATCH_SIZE=256
 DEFAULT_CHECKPOINT_DIR="./checkpoints"
 DATA_PATH="./data/fmow-sentinel/train"

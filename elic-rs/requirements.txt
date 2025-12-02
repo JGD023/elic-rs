@@ -1,6 +1,13 @@
+# elic-rs/requirements.txt
 compressai
 torch
 torchvision
 numpy
 # fMoW-S2 通常是 GeoTIFF 格式，需要 rasterio 来读取
 rasterio
+# (新) 评估脚本 (evaluate.py) 需要此库
+pytorch-msssim
+# (可选) check_model_stats.py 需要此库
+torchinfo
+# (可选) 可视化脚本需要此库
+matplotlib

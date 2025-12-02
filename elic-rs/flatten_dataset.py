@@ -7,7 +7,7 @@ from pathlib import Path
 # 1. 设置数据集的根目录
 # (假设此脚本与 'data' 文件夹在同一级)
 # 否则，请在此处指定 'data/fmow-sentinel' 的完整路径
-base_dir = Path("data/fmow-sentinel")
+base_dir = Path("fmow-sentinel")
 
 # 2. 设置要处理的数据集划分
 splits_to_process = ["train", "val", "test_gt"]

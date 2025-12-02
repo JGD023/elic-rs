@@ -1,4 +1,6 @@
-# clean_dataset.py
+# clean_small_images.py
+# (基于 clean_dataset.py 修改，移除了通道数检查)
+
 import os
 import glob
 import sys
@@ -6,13 +8,13 @@ import argparse
 import rasterio
 from tqdm import tqdm
 
-def clean_dataset(data_dir, min_res, target_channels, auto_yes=False):
+def clean_dataset(data_dir, min_res, auto_yes=False):
     """
-    递归扫描目录并删除不符合要求的文件。
+    (只读) 递归扫描目录并分析所有 .tif 文件的元数据。
     """
     print(f"--- 数据清理开始 ---")
     print(f"目标目录: {data_dir}")
-    print(f"要求: {target_channels} 个通道, 最小分辨率 {min_res}x{min_res}")
+    print(f"要求: 最小分辨率 {min_res}x{min_res} (不检查通道数)")
     print("-" * 20)
     
     # 1. 递归查找所有 .tif 文件
@@ -27,7 +29,6 @@ def clean_dataset(data_dir, min_res, target_channels, auto_yes=False):
 
     files_to_delete = []
     reasons = {
-        "channel": [],
         "resolution": [],
         "corrupt": []
     }
@@ -36,16 +37,12 @@ def clean_dataset(data_dir, min_res, target_channels, auto_yes=False):
     for filepath in tqdm(all_files, desc="分析中"):
         try:
             with rasterio.open(filepath) as src:
-                channels = src.count
+                # (修改) 只读取需要的分辨率
                 height = src.height
                 width = src.width
             
-            # 检查通道数
-            if channels != target_channels:
-                reasons["channel"].append(filepath)
-                files_to_delete.append(filepath)
-            # 检查分辨率
-            elif height < min_res or width < min_res:
+            # (修改) 只检查分辨率
+            if height < min_res or width < min_res:
                 reasons["resolution"].append(filepath)
                 files_to_delete.append(filepath)
                 
@@ -63,7 +60,6 @@ def clean_dataset(data_dir, min_res, target_channels, auto_yes=False):
         return
 
     print(f"总共找到 {len(files_to_delete)} 个需要删除的文件：")
-    print(f"  - {len(reasons['channel'])} 个 (原因: 通道数不是 {target_channels})")
     print(f"  - {len(reasons['resolution'])} 个 (原因: 分辨率小于 {min_res}x{min_res})")
     print(f"  - {len(reasons['corrupt'])} 个 (原因: 文件损坏或无法读取)")
     
@@ -91,7 +87,7 @@ def clean_dataset(data_dir, min_res, target_channels, auto_yes=False):
         print("操作已取消。没有文件被删除。")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="清理 fMoW-S2 数据集")
+    parser = argparse.ArgumentParser(description="清理 fMoW-S2 数据集 (仅分辨率)")
     parser.add_argument(
         "data_dir", 
         type=str, 
@@ -101,14 +97,9 @@ if __name__ == "__main__":
         "--patch_size", 
         type=int, 
         default=256, 
-        help="最小允许的分辨率 (H 和 W)，应与训练 patch_size 匹配"
+        help="最小允许的分辨率 (H 和 W)"
     )
-    parser.add_argument(
-        "--channels", 
-        type=int, 
-        default=13, 
-        help="必需的通道数"
-    )
+    # (修改) 移除了 --channels 参数
     parser.add_argument(
         "--yes", 
         action="store_true", 
@@ -117,4 +108,5 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    clean_dataset(args.data_dir, args.patch_size, args.channels, args.yes)
+    # (修改) 移除了 args.channels
+    clean_dataset(args.data_dir, args.patch_size, args.yes)
